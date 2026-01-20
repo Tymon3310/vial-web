@@ -104,6 +104,7 @@ emcc \
     -llzma \
     ../main.c
 cp ../index.html .
+cp ../coi-serviceworker.js .
 cat ../worker.js >> main-${UNIQVER}.worker.js
 sed -i 's+err("worker sent an unknown command+my_onmessage(e);return;err("worker sent an unknown command/+g' main-${UNIQVER}.js
 
