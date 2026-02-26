@@ -217,6 +217,18 @@ static PyObject * vialglue_dfu_flash_status(PyObject *self, PyObject *args) {
     return PyUnicode_FromString(dfu_status_buf);
 }
 
+// Non-blocking variant: returns {"status":"pending"} immediately if no status
+// is available yet.  Intended for use from the Qt main thread in a QTimer
+// polling loop, where we must not block (emscripten_futex_wait on the main
+// pthread would deadlock the JS event loop).
+static PyObject * vialglue_dfu_flash_status_poll(PyObject *self, PyObject *args) {
+    if (!__atomic_load_n(&dfu_status_ready, __ATOMIC_SEQ_CST)) {
+        return PyUnicode_FromString("{\"status\":\"pending\"}");
+    }
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
+    return PyUnicode_FromString(dfu_status_buf);
+}
+
 // Called from Python: dfu_request_usb() -> None
 // Triggers navigator.usb.requestDevice() on the main thread (needs user gesture
 // to have been set up; the main thread will pop a "Connect DFU device" dialog).
@@ -234,7 +246,12 @@ static PyObject * vialglue_dfu_request_usb(PyObject *self, PyObject *args) {
 // Called from Python: dfu_show_usb_picker() -> None
 // Shows a native browser button overlay so the user can trigger
 // navigator.usb.requestDevice() via a real user gesture (button click).
+// Resets dfu_status_ready so the subsequent dfu_flash_status_poll() loop
+// starts clean and doesn't see a stale status from a previous operation.
 static PyObject * vialglue_dfu_show_usb_picker(PyObject *self, PyObject *args) {
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
+    dfu_status_error = 0;
+
     EM_ASM({
         postMessage({cmd: "dfu_show_usb_picker"});
     });
@@ -295,8 +312,9 @@ static PyMethodDef VialglueMethods[] = {
     {"load_firmware_bin", vialglue_load_firmware_bin, METH_VARARGS, ""},
     {"save_layout",  vialglue_save_layout, METH_VARARGS, ""},
     {"fatal_error",  vialglue_fatal_error, METH_VARARGS, ""},
-    {"dfu_flash_start",    vialglue_dfu_flash_start,    METH_VARARGS, ""},
-    {"dfu_flash_status",   vialglue_dfu_flash_status,   METH_VARARGS, ""},
+    {"dfu_flash_start",         vialglue_dfu_flash_start,         METH_VARARGS, ""},
+    {"dfu_flash_status",        vialglue_dfu_flash_status,        METH_VARARGS, ""},
+    {"dfu_flash_status_poll",   vialglue_dfu_flash_status_poll,   METH_VARARGS, ""},
     {"dfu_request_usb",    vialglue_dfu_request_usb,    METH_VARARGS, ""},
     {"dfu_show_usb_picker", vialglue_dfu_show_usb_picker, METH_VARARGS, ""},
     {"dfu_show_hid_picker", vialglue_dfu_show_hid_picker, METH_VARARGS, ""},
