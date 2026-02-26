@@ -97,7 +97,7 @@ emcc \
     -pthread \
     -sDISABLE_DEPRECATED_FIND_EVENT_TARGET_BEHAVIOR=0 \
     -s EXTRA_EXPORTED_RUNTIME_METHODS=\["UTF16ToString","stringToUTF16","getValue","setValue"\] \
-    -sEXPORTED_FUNCTIONS=\["_PyRun_SimpleString","_vialglue_set_response","_vialglue_set_response_error","_vialglue_set_device_desc","_vialglue_set_dfu_status","_main"\] \
+    -sEXPORTED_FUNCTIONS=\["_PyRun_SimpleString","_vialglue_set_response","_vialglue_set_response_error","_vialglue_set_device_desc","_vialglue_set_dfu_status","_vialglue_dfu_status_ready_addr","_main"\] \
     -sPROXY_TO_PTHREAD \
     -sOFFSCREENCANVAS_SUPPORT \
     -L ../../deps/xz-${XZ_VER}/prefix/lib/ \

@@ -173,11 +173,22 @@ static volatile int       dfu_status_error  = 0;
 // JSON payload: {"status":"progress","pct":0.5} | {"status":"done"} | {"status":"error","msg":"..."}
 static char               dfu_status_buf[512];
 
+// Called from JS to get the WASM address of dfu_status_ready so JS can
+// Atomics.notify() after posting the status, waking emscripten_futex_wait().
+EMSCRIPTEN_KEEPALIVE
+int vialglue_dfu_status_ready_addr(void) {
+    return (int)(uintptr_t)&dfu_status_ready;
+}
+
 void vialglue_set_dfu_status(const char *json) {
     strncpy(dfu_status_buf, json, sizeof(dfu_status_buf) - 1);
     dfu_status_buf[sizeof(dfu_status_buf) - 1] = '\0';
     dfu_status_error = 0;
-    dfu_status_ready = 1;
+    // Use __atomic_store_n so the Atomics.notify() on the JS side sees the
+    // updated value atomically (WASM memory is a SharedArrayBuffer).
+    __atomic_store_n(&dfu_status_ready, 1, __ATOMIC_SEQ_CST);
+    // Wake any thread waiting in emscripten_futex_wait() on this address.
+    emscripten_futex_wake(&dfu_status_ready, 1);
 }
 
 // Called from Python: dfu_flash_start(firmware_bytes) -> None
@@ -189,7 +200,7 @@ static PyObject * vialglue_dfu_flash_start(PyObject *self, PyObject *args) {
     if (!PyArg_ParseTuple(args, "y#", &data, &size))
         return NULL;
 
-    dfu_status_ready = 0;
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
     dfu_status_error = 0;
 
     EM_ASM({
@@ -200,10 +211,16 @@ static PyObject * vialglue_dfu_flash_start(PyObject *self, PyObject *args) {
 }
 
 // Called from Python (polling loop): dfu_flash_status() -> str (JSON)
-// Blocks (spinlock) until the main thread delivers a status update.
+// Waits until the main thread delivers a status update.
+// emscripten_futex_wait() uses Atomics.wait() under the hood — it suspends
+// this pthread without blocking the worker's JS event loop, so the incoming
+// dfu_status postMessage (handled by worker.js onmessage) can be processed
+// and call _vialglue_set_dfu_status / emscripten_futex_wake().
 static PyObject * vialglue_dfu_flash_status(PyObject *self, PyObject *args) {
-    while (!dfu_status_ready) { /* spinlock */ }
-    dfu_status_ready = 0;
+    while (!__atomic_load_n(&dfu_status_ready, __ATOMIC_SEQ_CST)) {
+        emscripten_futex_wait(&dfu_status_ready, 0, 1e9);
+    }
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
     return PyUnicode_FromString(dfu_status_buf);
 }
 
@@ -211,7 +228,7 @@ static PyObject * vialglue_dfu_flash_status(PyObject *self, PyObject *args) {
 // Triggers navigator.usb.requestDevice() on the main thread (needs user gesture
 // to have been set up; the main thread will pop a "Connect DFU device" dialog).
 static PyObject * vialglue_dfu_request_usb(PyObject *self, PyObject *args) {
-    dfu_status_ready = 0;
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
     dfu_status_error = 0;
 
     EM_ASM({
@@ -238,7 +255,7 @@ static PyObject * vialglue_dfu_show_usb_picker(PyObject *self, PyObject *args) {
 // Fire-and-forget: returns immediately; call request_reconnect() afterwards
 // to block until the user clicks the button and the result is posted back.
 static PyObject * vialglue_dfu_show_hid_picker(PyObject *self, PyObject *args) {
-    dfu_status_ready = 0;
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
     dfu_status_error = 0;
 
     EM_ASM({
@@ -249,12 +266,14 @@ static PyObject * vialglue_dfu_show_hid_picker(PyObject *self, PyObject *args) {
 }
 
 // Called from Python after dfu_show_hid_picker() to wait for the WebHID
-// reconnect result.  Blocks (spinlock) until the main thread posts back
-// {"status":"reconnected"} or {"status":"error","msg":"..."}.
+// reconnect result.  Uses emscripten_futex_wait() (Atomics.wait) so the
+// worker event loop can receive the dfu_status postMessage from the main
+// thread and call _vialglue_set_dfu_status / emscripten_futex_wake().
 static PyObject * vialglue_request_reconnect(PyObject *self, PyObject *args) {
-    // Spinlock: wait for main thread to post back the result
-    while (!dfu_status_ready) { /* spinlock */ }
-    dfu_status_ready = 0;
+    while (!__atomic_load_n(&dfu_status_ready, __ATOMIC_SEQ_CST)) {
+        emscripten_futex_wait(&dfu_status_ready, 0, 1e9);
+    }
+    __atomic_store_n(&dfu_status_ready, 0, __ATOMIC_SEQ_CST);
     return PyUnicode_FromString(dfu_status_buf);
 }
 
